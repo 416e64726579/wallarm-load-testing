@@ -12,6 +12,19 @@ resource "aws_key_pair" "mykey" {
 }
 
 # #
+# # Request a spot instance at $0.03
+# #
+# resource "aws_spot_instance_request" "waf_spot_request" {
+#   ami           = var.wallarm_node_ami_id
+#   spot_price    = "0.3"
+#   instance_type = var.waf_node_instance_type
+#
+#   tags = {
+#     Name = "waf_spot_request"
+#   }
+# }
+#
+# #
 # # Create IAM Role for CloudWatch Agent
 # #
 # resource "aws_iam_role" "agent_iam_role" {
@@ -69,7 +82,7 @@ resource "aws_key_pair" "mykey" {
 #   }
 #   EOF
 # }
-
+#
 # #
 # # Create IAM Profile for CloudWatch Agent Role
 # #
@@ -88,40 +101,6 @@ resource "aws_vpc" "my_vpc" {
     Name = "tf-wallarm-load"
   }
 }
-
-# #
-# # Request a spot instance at $0.03
-# #
-# resource "aws_spot_instance_request" "waf_spot_request" {
-#   ami = var.wallarm_node_ami_id
-#   # spot_price    = "0.3"
-#   instance_type = var.waf_node_instance_type
-#
-#   tags = {
-#     Name = "waf_spot_request"
-#   }
-# }
-
-
-# #
-# # Request a spot instance at $0.03
-# #
-# resource "aws_launch_template" "spot_launch_template" {
-#   name = "spot_launch_template"
-#
-#   iam_instance_profile {
-#     name = "${aws_iam_instance_profile.agent_iam_profile.name}"
-#   }
-#
-#   instance_market_options {
-#     market_type = "spot"
-#
-#     spot_options {
-#       max_price          = "0.03"
-#       spot_instance_type = "persistent"
-#     }
-#   }
-# }
 
 resource "aws_subnet" "public_a" {
   vpc_id                  = "${aws_vpc.my_vpc.id}"
@@ -269,7 +248,7 @@ resource "aws_security_group" "wallarm_asg_sg" {
 # Configure SG for Wallarm LB instance.
 #
 resource "aws_security_group" "wallarm_elb_sg" {
-  name   = "tf-wallarm-load-waf-nlb"
+  name   = "tf-wallarm-load-waf-elb"
   vpc_id = "${aws_vpc.my_vpc.id}"
 
   ingress {
@@ -324,67 +303,31 @@ resource "aws_elb" "fh_elb" {
 }
 
 #
-# Configure NLB instance for WAF nodes.
+# Configure ELB instance for WAF instances.
 #
-resource "aws_lb" "wallarm_asg_nlb" {
-  name               = "tf-wallarm-load-asg-nlb"
-  internal           = false
-  load_balancer_type = "network"
+resource "aws_elb" "wallarm_elb" {
+  name = "tf-wallarm-load-walarm"
+  security_groups = [
+    "${aws_security_group.wallarm_asg_sg.id}"
+  ]
   subnets = [
     "${aws_subnet.public_a.id}",
     "${aws_subnet.public_b.id}"
   ]
 
-  enable_deletion_protection = false
-}
-
-#
-# Configure HTTP and HTTPS target groups for the NLB load balancer.
-#
-resource "aws_lb_target_group" "wallarm_asg_target_http" {
-  name     = "tf-wallarm-load-asg-target-http"
-  port     = 80
-  protocol = "TCP"
-  vpc_id   = "${aws_vpc.my_vpc.id}"
-  stickiness {
-    enabled = false
-    type    = "lb_cookie"
+  cross_zone_load_balancing = true
+  health_check {
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 3
+    interval            = 30
+    target              = "HTTP:80/"
   }
-}
-
-resource "aws_lb_target_group" "wallarm_asg_target_https" {
-  name     = "tf-wallarm-load-asg-target-https"
-  port     = 443
-  protocol = "TCP"
-  vpc_id   = "${aws_vpc.my_vpc.id}"
-  stickiness {
-    enabled = false
-    type    = "lb_cookie"
-  }
-}
-
-#
-# Configure HTTP and HTTPS listeners for the NLB load balancer.
-#
-resource "aws_lb_listener" "wallarm_asg_nlb_http" {
-  load_balancer_arn = "${aws_lb.wallarm_asg_nlb.arn}"
-  port              = "80"
-  protocol          = "TCP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = "${aws_lb_target_group.wallarm_asg_target_http.arn}"
-  }
-}
-
-resource "aws_lb_listener" "wallarm_asg_nlb_https" {
-  load_balancer_arn = "${aws_lb.wallarm_asg_nlb.arn}"
-  port              = "443"
-  protocol          = "TCP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = "${aws_lb_target_group.wallarm_asg_target_https.arn}"
+  listener {
+    lb_port           = 80
+    lb_protocol       = "http"
+    instance_port     = "80"
+    instance_protocol = "http"
   }
 }
 
@@ -403,16 +346,20 @@ resource "aws_launch_configuration" "wrk_launch_config" {
 #cloud-config
 
 runcmd:
- - sudo apt-get update
- - sudo apt-get install -y build-essential libssl-dev git zlib1g-dev
+ - apt-get update
+ - apt-get install -y build-essential libssl-dev git zlib1g-dev
  - git clone https://github.com/giltene/wrk2.git
  - cd wrk2
  - make
- - sudo cp wrk /usr/local/bin
+ - cp wrk /usr/local/bin
  - mkdir /etc/cloudwatch/
  - curl -O https://s3.${var.aws_region}.amazonaws.com/amazoncloudwatch-agent-${var.aws_region}/debian/amd64/latest/amazon-cloudwatch-agent.deb
- - sudo dpkg -i -E ./amazon-cloudwatch-agent.deb
- - sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
+ - dpkg -i -E ./amazon-cloudwatch-agent.deb
+ - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
+ - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
+ - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
+ - ulimit -n 1000000
+ - sysctl -p
  EOF
 }
 
@@ -426,11 +373,6 @@ resource "aws_autoscaling_group" "wrk_asg" {
   max_size             = "1"
   min_elb_capacity     = "1"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
-
-  # launch_template {
-  #   id      = "${aws_launch_template.spot_launch_template.id}"
-  #   version = "$Latest"
-  # }
 
   tag {
     key                 = "Name"
@@ -455,20 +397,24 @@ resource "aws_launch_configuration" "fh_launch_config" {
 
 runcmd:
  - curl -sSL https://get.docker.com/ | sh
- - docker run -d --restart=on-failure -p 80:8080 --name bknd awallarm/bknd:latest
+ - docker pull awallarm/bknd:latest
+ - apt-get update -y && apt-get install nginx -y
+ - systemctl start nginx
  - mkdir /etc/cloudwatch/
  - curl -O https://s3.${var.aws_region}.amazonaws.com/amazoncloudwatch-agent-${var.aws_region}/debian/amd64/latest/amazon-cloudwatch-agent.deb
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
- - echo 'net.ipv4.ip_local_port_range=10024 60999' >> /etc/sysctl.conf
- - echo "* soft nofile 25000\n* hard nofile 50000" >> /etc/security/limits.conf
- - ulimit -u unlimited
+ - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
+ - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
+ - ulimit -n 1000000
  - sysctl -p
+ - ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+ - nginx -s reload
  EOF
 }
 
 #
-# ASG for fasthttp instances.
+# ASG for fasthttp instances
 #
 resource "aws_autoscaling_group" "fh_asg" {
   name                 = "tf-fh_asg-${aws_launch_configuration.fh_launch_config.name}"
@@ -478,11 +424,6 @@ resource "aws_autoscaling_group" "fh_asg" {
   min_elb_capacity     = "1"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
   load_balancers       = ["${aws_elb.fh_elb.id}"]
-
-  # launch_template {
-  #   id      = "${aws_launch_template.spot_launch_template.id}"
-  #   version = "$Latest"
-  # }
 
   tag {
     key                 = "Name"
@@ -510,7 +451,68 @@ write_files:
  - path: /etc/nginx/nginx.conf
    owner: root:root
    permissions: '0644'
-   content: "${file("nginx.conf")}"
+   content: |
+    user www-data;
+    worker_processes auto;
+    worker_rlimit_nofile 100000;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+
+    events {
+      worker_connections 20000;
+      multi_accept on;
+      use epoll;
+    }
+
+    http {
+
+      ##
+      # Basic Settings
+      ##
+
+      sendfile on;
+      tcp_nopush on;
+      tcp_nodelay on;
+      keepalive_timeout 30;
+      types_hash_max_size 2048;
+      server_tokens off;
+      reset_timedout_connection on;
+      send_timeout 5;
+      client_max_body_size 0;
+      proxy_request_buffering off;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      keepalive_requests 100000;
+
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+
+      ##
+      # SSL Settings
+      ##
+
+      ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # Dropping SSLv3, ref: POODLE
+      ssl_prefer_server_ciphers on;
+
+      ##
+      # Logging Settings
+      ##
+      access_log /var/log/nginx/access.log;
+      error_log /var/log/nginx/error.log;
+
+      ##
+      # Gzip Settings
+      ##
+
+      gzip on;
+
+      ##
+      # Virtual Host Configs
+      ##
+
+      include /etc/nginx/conf.d/*.conf;
+      include /etc/nginx/sites-enabled/*;
+    }
  - path: /etc/nginx/scanner-ips.conf
    owner: root:root
    permissions: '0644'
@@ -538,6 +540,10 @@ write_files:
    owner: root:root
    permissions: '0644'
    content: |
+     upstream backend {
+       server ${aws_elb.fh_elb.dns_name};
+       keepalive 10000;
+     }
      map $remote_addr $wallarm_mode_real {
      default block;
        include /etc/nginx/scanner-ips.conf;
@@ -553,10 +559,15 @@ write_files:
        }
        location / {
          # setting the address for request forwarding
-         proxy_pass http://${aws_elb.fh_elb.dns_name};
+         proxy_pass http://backend;
          proxy_set_header Host $host;
          proxy_set_header X-Real-IP $remote_addr;
          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+         proxy_http_version 1.1;
+         proxy_set_header Connection "";
+         keepalive_requests 100000;
+
          set_real_ip_from 172.31.0.0/16;
          real_ip_header X-Forwarded-For;
        }
@@ -576,10 +587,14 @@ write_files:
        }
        location / {
          # setting the address for request forwarding
-         proxy_pass http://${aws_elb.fh_elb.dns_name};
+         proxy_pass http://backend;
          proxy_set_header Host $host;
          proxy_set_header X-Real-IP $remote_addr;
          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+         proxy_http_version 1.1;
+         proxy_set_header Connection "";
+         keepalive_requests 100000;
        }
      }
  - path: /etc/nginx/key.pem
@@ -652,8 +667,13 @@ runcmd:
  - [ sed, -i, -Ee, 's/^#(.*sync-blacklist.*)/\1/', /etc/cron.d/wallarm-node-nginx ]
  - mkdir /etc/cloudwatch/
  - curl -O https://s3.${var.aws_region}.amazonaws.com/amazoncloudwatch-agent-${var.aws_region}/debian/amd64/latest/amazon-cloudwatch-agent.deb
- - sudo dpkg -i -E ./amazon-cloudwatch-agent.deb
- - sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
+ - dpkg -i -E ./amazon-cloudwatch-agent.deb
+ - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
+ - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
+ - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
+ - ulimit -n 1000000
+ - sysctl -p
+ - systemctl stop wallarm-tarantool
  EOF
 }
 
@@ -669,32 +689,11 @@ resource "aws_autoscaling_group" "wallarm_waf_asg" {
   max_size             = "1"
   min_elb_capacity     = "1"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}"]
-  target_group_arns    = ["${aws_lb_target_group.wallarm_asg_target_http.arn}", "${aws_lb_target_group.wallarm_asg_target_https.arn}"]
-
-  enabled_metrics = [
-    "GroupMinSize",
-    "GroupMaxSize",
-    "GroupDesiredCapacity",
-    "GroupInServiceInstances",
-    "GroupTotalInstances"
-  ]
-  metrics_granularity = "1Minute"
-
-  # launch_template {
-  #   id      = "${aws_launch_template.spot_launch_template.id}"
-  #   version = "$Latest"
-  # }
+  load_balancers       = ["${aws_elb.wallarm_elb.id}"]
 
   tag {
     key                 = "Name"
     value               = "tf-wallarm-load-waf-node"
     propagate_at_launch = true
   }
-}
-
-#
-# Print out the DNS name of created NLB instance.
-#
-output "waf_nlb_dns_name" {
-  value = [aws_lb.wallarm_asg_nlb.dns_name]
 }

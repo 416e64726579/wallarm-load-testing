@@ -4,3 +4,4 @@ set_env.sh
 .env
 .hints_*
 variables.auto.tfvars.tf
+main.tf.bak
