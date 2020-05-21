@@ -4,7 +4,7 @@ provider "aws" {
 }
 
 #
-# Define a Key Pair to be used for both fh and WAF instances.
+# Define a Key Pair to be used for both backend and WAF instances.
 #
 resource "aws_key_pair" "mykey" {
   key_name   = "tf-wallarm-load-key"
@@ -23,73 +23,73 @@ resource "aws_key_pair" "mykey" {
 #     Name = "waf_spot_request"
 #   }
 # }
+
 #
-# #
-# # Create IAM Role for CloudWatch Agent
-# #
-# resource "aws_iam_role" "agent_iam_role" {
-#   name               = "CloudWatchAgentServer"
-#   assume_role_policy = <<-EOF
-#   {
-#     "Version": "2012-10-17",
-#     "Statement": [
-#       {
-#         "Action": "sts:AssumeRole",
-#         "Principal": {
-#           "Service": "ec2.amazonaws.com"
-#         },
-#         "Effect": "Allow",
-#         "Sid": ""
-#       }
-#     ]
-#   }
-#   EOF
-# }
+# Create IAM Role for CloudWatch Agent
 #
-# #
-# # Create IAM Policy for CloudWatch Agent
-# #
-# resource "aws_iam_role_policy" "agent_iam_policy" {
-#   name = "agent_iam_policy"
-#   role = aws_iam_role.agent_iam_role.id
+resource "aws_iam_role" "agent_iam_role" {
+  name               = "AmazonCloudWatch-Load"
+  assume_role_policy = <<-EOF
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": "sts:AssumeRole",
+        "Principal": {
+          "Service": "ec2.amazonaws.com"
+        },
+        "Effect": "Allow",
+        "Sid": ""
+      }
+    ]
+  }
+  EOF
+}
+
 #
-#   policy = <<-EOF
-#   {
-#       "Version": "2012-10-17",
-#       "Statement": [
-#           {
-#               "Effect": "Allow",
-#               "Action": [
-#                   "cloudwatch:PutMetricData",
-#                   "ec2:DescribeVolumes",
-#                   "ec2:DescribeTags",
-#                   "logs:PutLogEvents",
-#                   "logs:DescribeLogStreams",
-#                   "logs:DescribeLogGroups",
-#                   "logs:CreateLogStream",
-#                   "logs:CreateLogGroup"
-#               ],
-#               "Resource": "*"
-#           },
-#           {
-#               "Effect": "Allow",
-#               "Action": [
-#                   "ssm:GetParameter"
-#               ],
-#               "Resource": "arn:aws:ssm:*:*:parameter/AmazonCloudWatch-*"
-#           }
-#       ]
-#   }
-#   EOF
-# }
+# Create IAM Policy for CloudWatch Agent
 #
-# #
-# # Create IAM Profile for CloudWatch Agent Role
-# #
-# resource "aws_iam_instance_profile" "agent_iam_profile" {
-#   name = "agent_iam_profile"
-#   role = "${aws_iam_role.agent_iam_role.name}"
-# }
+resource "aws_iam_role_policy" "agent_iam_policy" {
+  name = "AmazonCloudWatch-Load"
+  role = aws_iam_role.agent_iam_role.id
+
+  policy = <<-EOF
+  {
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "cloudwatch:PutMetricData",
+                  "ec2:DescribeVolumes",
+                  "ec2:DescribeTags",
+                  "logs:PutLogEvents",
+                  "logs:DescribeLogStreams",
+                  "logs:DescribeLogGroups",
+                  "logs:CreateLogStream",
+                  "logs:CreateLogGroup"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Effect": "Allow",
+              "Action": [
+                  "ssm:GetParameter"
+              ],
+              "Resource": "arn:aws:ssm:*:*:parameter/AmazonCloudWatch-*"
+          }
+      ]
+  }
+  EOF
+}
+
+#
+# Create IAM Profile for CloudWatch Agent Role
+#
+resource "aws_iam_instance_profile" "agent_iam_profile" {
+  name = "AmazonCloudWatch-Load"
+  role = "${aws_iam_role.agent_iam_role.name}"
+}
 
 #
 # Configure VPC, subnets, routing table and Internet Gateway resources.
@@ -173,10 +173,10 @@ resource "aws_security_group" "wrk_sg" {
 }
 
 #
-# Configure SG for fasthttp instances.
+# Configure SG for Backend instances
 #
-resource "aws_security_group" "fh_sg" {
-  name   = "tf-wallarm-load-fh"
+resource "aws_security_group" "backend_sg" {
+  name   = "tf-wallarm-load-backend"
   vpc_id = "${aws_vpc.my_vpc.id}"
 
   ingress {
@@ -274,12 +274,12 @@ resource "aws_security_group" "wallarm_elb_sg" {
 }
 
 #
-# Configure ELB instance for fasthttp instances.
+# Configure ELB instance for Backend instances.
 #
-resource "aws_elb" "fh_elb" {
-  name = "tf-wallarm-load-fh"
+resource "aws_elb" "backend_elb" {
+  name = "tf-wallarm-load-backend"
   security_groups = [
-    "${aws_security_group.fh_sg.id}"
+    "${aws_security_group.backend_sg.id}"
   ]
   subnets = [
     "${aws_subnet.public_a.id}",
@@ -339,10 +339,10 @@ resource "aws_launch_configuration" "wrk_launch_config" {
   image_id      = var.wrk_ami_id
   instance_type = var.wrk_instance_type
   # spot_price           = "0.3"
-  # iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
-  key_name        = "tf-wallarm-load-key"
-  security_groups = ["${aws_security_group.wrk_sg.id}"]
-  user_data       = <<-EOF
+  iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
+  key_name             = "tf-wallarm-load-key"
+  security_groups      = ["${aws_security_group.wrk_sg.id}"]
+  user_data            = <<-EOF
 #cloud-config
 
 runcmd:
@@ -357,8 +357,8 @@ runcmd:
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
- - ulimit -n 1000000
+ - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
+ - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
  - sysctl -p
  EOF
 }
@@ -369,9 +369,9 @@ runcmd:
 resource "aws_autoscaling_group" "wrk_asg" {
   name                 = "tf-wrk_asg-${aws_launch_configuration.wrk_launch_config.name}"
   launch_configuration = "${aws_launch_configuration.wrk_launch_config.name}"
-  min_size             = "1"
-  max_size             = "1"
-  min_elb_capacity     = "1"
+  min_size             = "2"
+  max_size             = "2"
+  min_elb_capacity     = "2"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
 
   tag {
@@ -382,22 +382,86 @@ resource "aws_autoscaling_group" "wrk_asg" {
 }
 
 #
-# Launch Configuration for fasthttp instances.
+# Launch Configuration for Backend instances.
 #
-resource "aws_launch_configuration" "fh_launch_config" {
+resource "aws_launch_configuration" "backend_launch_config" {
 
-  image_id      = var.fasthttp_ami_id
-  instance_type = var.fasthttp_instance_type
+  image_id      = var.backend_ami_id
+  instance_type = var.backend_instance_type
   # spot_price           = "0.3"
-  # iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
-  key_name        = "tf-wallarm-load-key"
-  security_groups = ["${aws_security_group.fh_sg.id}"]
-  user_data       = <<-EOF
+  iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
+  key_name             = "tf-wallarm-load-key"
+  security_groups      = ["${aws_security_group.backend_sg.id}"]
+  user_data            = <<-EOF
 #cloud-config
 
+write_files:
+ - path: /etc/nginx/custom-nginx.conf
+   owner: root:root
+   permissions: '0644'
+   content: |
+    user www-data;
+    worker_processes auto;
+    worker_rlimit_nofile 100000;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+
+    events {
+      worker_connections 20000;
+      multi_accept on;
+      use epoll;
+    }
+
+    http {
+
+      ##
+      # Basic Settings
+      ##
+
+      sendfile on;
+      tcp_nopush on;
+      tcp_nodelay on;
+      keepalive_timeout 30;
+      types_hash_max_size 2048;
+      server_tokens off;
+      reset_timedout_connection on;
+      send_timeout 5;
+      client_max_body_size 0;
+      proxy_request_buffering off;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      keepalive_requests 100000;
+
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+
+      ##
+      # SSL Settings
+      ##
+
+      ssl_protocols TLSv1 TLSv1.1 TLSv1.2; # Dropping SSLv3, ref: POODLE
+      ssl_prefer_server_ciphers on;
+
+      ##
+      # Logging Settings
+      ##
+      access_log /var/log/nginx/access.log;
+      error_log /var/log/nginx/error.log;
+
+      ##
+      # Gzip Settings
+      ##
+
+      gzip on;
+
+      ##
+      # Virtual Host Configs
+      ##
+
+      include /etc/nginx/conf.d/*.conf;
+      include /etc/nginx/sites-enabled/*;
+    }
 runcmd:
- - curl -sSL https://get.docker.com/ | sh
- - docker pull awallarm/bknd:latest
  - apt-get update -y && apt-get install nginx -y
  - systemctl start nginx
  - mkdir /etc/cloudwatch/
@@ -405,29 +469,30 @@ runcmd:
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
- - ulimit -n 1000000
+ - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
+ - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
  - sysctl -p
- - ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+ - mv /etc/nginx/custom-nginx.conf /etc/nginx/nginx.conf
+ - sed 's#404;#404;\n                keepalive_requests 100000;#g' /etc/nginx/sites-available/default
  - nginx -s reload
  EOF
 }
 
 #
-# ASG for fasthttp instances
+# ASG for Backend instances
 #
-resource "aws_autoscaling_group" "fh_asg" {
-  name                 = "tf-fh_asg-${aws_launch_configuration.fh_launch_config.name}"
-  launch_configuration = "${aws_launch_configuration.fh_launch_config.name}"
-  min_size             = "1"
-  max_size             = "1"
-  min_elb_capacity     = "1"
+resource "aws_autoscaling_group" "backend_asg" {
+  name                 = "tf-backend_asg-${aws_launch_configuration.backend_launch_config.name}"
+  launch_configuration = "${aws_launch_configuration.backend_launch_config.name}"
+  min_size             = "4"
+  max_size             = "4"
+  min_elb_capacity     = "4"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
-  load_balancers       = ["${aws_elb.fh_elb.id}"]
+  load_balancers       = ["${aws_elb.backend_elb.id}"]
 
   tag {
     key                 = "Name"
-    value               = "tf-wallarm-load-fh"
+    value               = "tf-wallarm-load-backend"
     propagate_at_launch = true
   }
 }
@@ -441,10 +506,10 @@ resource "aws_launch_configuration" "wallarm_launch_config" {
   image_id      = var.wallarm_node_ami_id
   instance_type = var.waf_node_instance_type
   # spot_price           = "0.3"
-  # iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
-  key_name        = "tf-wallarm-load-key"
-  security_groups = ["${aws_security_group.wallarm_asg_sg.id}"]
-  user_data       = <<-EOF
+  iam_instance_profile = "${aws_iam_instance_profile.agent_iam_profile.name}"
+  key_name             = "tf-wallarm-load-key"
+  security_groups      = ["${aws_security_group.wallarm_asg_sg.id}"]
+  user_data            = <<-EOF
 #cloud-config
 
 write_files:
@@ -541,7 +606,7 @@ write_files:
    permissions: '0644'
    content: |
      upstream backend {
-       server ${aws_elb.fh_elb.dns_name};
+       server ${aws_elb.backend_elb.dns_name};
        keepalive 10000;
      }
      map $remote_addr $wallarm_mode_real {
@@ -568,7 +633,7 @@ write_files:
          proxy_set_header Connection "";
          keepalive_requests 100000;
 
-         set_real_ip_from 172.31.0.0/16;
+         set_real_ip_from 10.0.0.0/8;
          real_ip_header X-Forwarded-For;
        }
      }
@@ -670,10 +735,9 @@ runcmd:
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 100000\n* hard nofile 100000" >> /etc/security/limits.conf'
- - ulimit -n 1000000
+ - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
+ - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
  - sysctl -p
- - systemctl stop wallarm-tarantool
  EOF
 }
 
@@ -685,9 +749,9 @@ resource "aws_autoscaling_group" "wallarm_waf_asg" {
 
   name                 = "tf-wallarm-load-waf-asg-${aws_launch_configuration.wallarm_launch_config.name}"
   launch_configuration = "${aws_launch_configuration.wallarm_launch_config.name}"
-  min_size             = "1"
-  max_size             = "1"
-  min_elb_capacity     = "1"
+  min_size             = "8"
+  max_size             = "8"
+  min_elb_capacity     = "8"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}"]
   load_balancers       = ["${aws_elb.wallarm_elb.id}"]
 

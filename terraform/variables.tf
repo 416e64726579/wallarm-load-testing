@@ -29,12 +29,12 @@ variable "subnet_b_cidr_block" {
   default = "10.0.1.0/24"
 }
 
-variable "fasthttp_ami_id" {
+variable "backend_ami_id" {
   type    = string
   default = "ami-080df3f56add7eca7"
 }
 
-variable "fasthttp_instance_type" {
+variable "backend_instance_type" {
   type    = string
   default = "t3.2xlarge"
 }
