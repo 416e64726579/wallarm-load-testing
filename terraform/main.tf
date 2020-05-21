@@ -193,13 +193,6 @@ resource "aws_security_group" "backend_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -229,13 +222,6 @@ resource "aws_security_group" "wallarm_asg_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -254,13 +240,6 @@ resource "aws_security_group" "wallarm_elb_sg" {
   ingress {
     from_port   = 80
     to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -371,7 +350,6 @@ resource "aws_autoscaling_group" "wrk_asg" {
   launch_configuration = "${aws_launch_configuration.wrk_launch_config.name}"
   min_size             = "2"
   max_size             = "2"
-  min_elb_capacity     = "2"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
 
   tag {
@@ -605,6 +583,8 @@ write_files:
    owner: root:root
    permissions: '0644'
    content: |
+     resolver 10.0.0.2 valid=30s;
+     resolver_timeout 15s;
      upstream backend {
        server ${aws_elb.backend_elb.dns_name};
        keepalive 10000;
@@ -637,98 +617,12 @@ write_files:
          real_ip_header X-Forwarded-For;
        }
      }
-     server {
-       listen 443 ssl default_server reuseport;
-       server_name _;
-       wallarm_acl default;
-       ssl_protocols TLSv1.2;
-       ssl_ciphers         HIGH:!aNULL:!MD5;
-       ssl_certificate /etc/nginx/cert.pem;
-       ssl_certificate_key /etc/nginx/key.pem;
-       wallarm_mode block;
-       # wallarm_instance 1;
-       location /healthcheck {
-         return 200;
-       }
-       location / {
-         # setting the address for request forwarding
-         proxy_pass http://backend;
-         proxy_set_header Host $host;
-         proxy_set_header X-Real-IP $remote_addr;
-         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-         proxy_http_version 1.1;
-         proxy_set_header Connection "";
-         keepalive_requests 100000;
-       }
-     }
- - path: /etc/nginx/key.pem
-   # This is a self-signed SSL certificate
-   owner: root:root
-   permissions: '0600'
-   content: |
-    -----BEGIN PRIVATE KEY-----
-    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDB6BggatWgySvo
-    0M0k5+AzRaTFgSm32AZndx7v7qTbhJy8SaGgrdBz6rRLd/kFY3c3uT/yYtNGsKlb
-    watSUHnyHTvwmfiQaZzJ4A97WqYn8bLke/seYRSYe+MYWLzykBlyS8qaauiGDLoF
-    QhJ7UYlSJs1PJOqgu3NGIPy5PHVkknk/ykEQPIfjXE7pHftdC6/F+hkzyNlXehfo
-    q3GHlDI/8UPexvg+QbluwtOe8ypZXbSqnA29Vpy8gw2Gyl9504El6r62EFL0lM5Y
-    U1E7e1sUp1QiMTvqN1HGtuvOcfDS7VjgjgYKkJ+YL1vUKFTeMSq+fA+i1MPPsu/I
-    RnbfCnD7AgMBAAECggEAWyKMhF/x+9nRK2FHqbrZov9ui+1DAEcl62cPQVF2Zj4T
-    tGMe9ff7ax+6kWXXwnKXS7djmLZd+nF5h8ikjtGIHwUicNjM/ILG0BLg8+cNBOUS
-    YVTsF8Ek/u3rNDwwwgh8DT4WATGSC77bhzEgopkV42idQj9ljxnK+gDzBtSlkBh9
-    j7iL6C7II8dcnElu4HVY8Iuu67F9dsmNW76NJ7iqXuQZ3wQ4VUZ2FfaThBfHnPlq
-    4k1bekCR5x5DuTPe90M4B4GIqxbBVo3yge1zvvVBY/O2dZDNyFgrxOQ2LQ4+4Y2P
-    x7rD9QH7eLj03HU+GP0LLDeDWyIbEcZpmy7PvicYYQKBgQDxPof//pQm72FiPfmh
-    WTRzuWWdp72159jp6n/y8FP6IJNDhSA8p7FlffJ8cbQl9zpSwNeMg8MOv3ZAYNtz
-    /sYL17QKNLikRw1kom6PB2X738LVpVhoiYA5WtIufJoYxYdp665MhQygz480K/F1
-    QEyQLBTedpAdF8waeohRDe/SMwKBgQDNxFZSBIU4Sk3MznbJ3gov2WlRpbz4g9V4
-    4dRi3NEQrnbx8i0+7NOvzv+iouvXcm+lkXfLcluWCUhaIFW+dUQ3zAgPvWdWRQOO
-    WNvikEuwz+LlGmY0KO5hVatvAGPv7HL4iXCB6/4ZQdTzZsWBO8MXhyCiTIUYHd3+
-    y9pIFX9uGQKBgESU2UbeUbHL5axvH/NNj8rCTvAFyrnW4mSFZMBksArwjczpIKP9
-    rEHFD1VvYZ5VbUAvUFfC8YXUykI9BsYwDI87UBSCrmcNR/Ju9u00VjrHfvULn1mA
-    lXI4rn3GsGwQY5GqDY/1VwS0XOqg/3CsyddGoNwpaojKxhxU70HTq3TfAoGADJ5U
-    uNTkIo6T9NJYgIqoT0Ti64nha9AR4EbhEmr+OyqnyrCSS8CUPrzP+nZJRj4TULD6
-    CrTpnurU0AoZmANy+oT9nZF869JxpGIYoe09Zwtom6ohyGMWM0vgpn78ofL7Hfi3
-    uI/zVjMuTvrnc8Rpc2DrBGjy5Ia4XW685RzEYskCgYEArXW5DdZuRQxX9CJmGoWK
-    Sjxp1QLXzrHzhSeBTTYKWrP0YHBaDHhM6LBzbI21dAeV4qOKfDIduNWrzqSsxRcp
-    PwyquUKmj6Bv0j64TwQKnHmsawVd4wB6FhpMUchNxszIKBhsLXXSdRJjpsL5Hfvt
-    PG4rVUW5036CMHgnlP5zZLk=
-    -----END PRIVATE KEY-----
- - path: /etc/nginx/cert.pem
-   # This is a self-signed SSL certificate
-   owner: root:root
-   permissions: '0644'
-   content: |
-    -----BEGIN CERTIFICATE-----
-    MIIDVjCCAj4CCQDwQNr36lh8ZjANBgkqhkiG9w0BAQsFADBtMQswCQYDVQQGEwJV
-    UzELMAkGA1UECAwCQ0ExEjAQBgNVBAcMCVNhbiBNYXRlbzEQMA4GA1UECgwHV2Fs
-    bGFybTELMAkGA1UECwwCSVQxHjAcBgNVBAMMFSoudmljdG9yLWdhcnR2aWNoLmNv
-    bTAeFw0yMDAyMjkwNjQyNDdaFw0yMTAyMjgwNjQyNDdaMG0xCzAJBgNVBAYTAlVT
-    MQswCQYDVQQIDAJDQTESMBAGA1UEBwwJU2FuIE1hdGVvMRAwDgYDVQQKDAdXYWxs
-    YXJtMQswCQYDVQQLDAJJVDEeMBwGA1UEAwwVKi52aWN0b3ItZ2FydHZpY2guY29t
-    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwegYIGrVoMkr6NDNJOfg
-    M0WkxYEpt9gGZ3ce7+6k24ScvEmhoK3Qc+q0S3f5BWN3N7k/8mLTRrCpW8GrUlB5
-    8h078Jn4kGmcyeAPe1qmJ/Gy5Hv7HmEUmHvjGFi88pAZckvKmmrohgy6BUISe1GJ
-    UibNTyTqoLtzRiD8uTx1ZJJ5P8pBEDyH41xO6R37XQuvxfoZM8jZV3oX6Ktxh5Qy
-    P/FD3sb4PkG5bsLTnvMqWV20qpwNvVacvIMNhspfedOBJeq+thBS9JTOWFNRO3tb
-    FKdUIjE76jdRxrbrznHw0u1Y4I4GCpCfmC9b1ChU3jEqvnwPotTDz7LvyEZ23wpw
-    +wIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQAhfJ8OCvF3cMJrKr2RTIpq7impRvjY
-    lNaT/hP5S8Y0YHtWXdxP/vMk0tZSD7NAKcd0Zz4ocnezYhNxqeZcL5Vd8EUXqGpE
-    hZ7r02pkHwIglprF6iuQY/qRE566zUjcVQieYqTb4rki42fSVAck7lv+LIg+CCOg
-    C1dz11284x/8hyy06M1zbtET0oniEnZuDFOtbMTLUqR9jLDtqJsgOgcD7Y3Y+WXI
-    9DnIZdXRjK+d45ytY6c9SqV/ienxbvjx2G3DG2kiYGfTPQOUVC+UX8KtqNEDpxOZ
-    ooqMBlOXYxLJ2I9UcCu21Wj+CXJAPPbj/UZ79t59nC2yB5OmrniOFsMC
-    -----END CERTIFICATE-----
 runcmd:
  - /usr/share/wallarm-common/addnode --force -H ${var.wallarm_api_domain} -u ${var.deploy_username} -p ${var.deploy_password} --name `hostname`
  - 'echo "sync_blacklist:" >> /etc/wallarm/node.yaml'
  - 'echo "  nginx_url: http://127.0.0.9/wallarm-acl" >> /etc/wallarm/node.yaml'
  - mkdir /var/cache/nginx/
  - chown www-data /var/cache/nginx/
- - nginx -t
- - service nginx start
- - service nginx reload
  - [ sed, -i, -Ee, 's/^#(.*sync-blacklist.*)/\1/', /etc/cron.d/wallarm-node-nginx ]
  - mkdir /etc/cloudwatch/
  - curl -O https://s3.${var.aws_region}.amazonaws.com/amazoncloudwatch-agent-${var.aws_region}/debian/amd64/latest/amazon-cloudwatch-agent.deb
@@ -738,6 +632,9 @@ runcmd:
  - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
  - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
  - sysctl -p
+ - sed -i '26 a Restart=on-failure\nRestartSec=5s' /lib/systemd/system/nginx.service
+ - systemctl daemon-reload
+ - service nginx start
  EOF
 }
 
