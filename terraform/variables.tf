@@ -19,16 +19,6 @@ variable "subnet_a_cidr_block" {
   default = "10.0.0.0/24"
 }
 
-variable "az_b" {
-  type    = string
-  default = "eu-central-1b"
-}
-
-variable "subnet_b_cidr_block" {
-  type    = string
-  default = "10.0.1.0/24"
-}
-
 variable "backend_ami_id" {
   type    = string
   default = "ami-080df3f56add7eca7"

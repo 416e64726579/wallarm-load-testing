@@ -112,15 +112,6 @@ resource "aws_subnet" "public_a" {
   }
 }
 
-resource "aws_subnet" "public_b" {
-  vpc_id                  = "${aws_vpc.my_vpc.id}"
-  cidr_block              = var.subnet_b_cidr_block
-  availability_zone       = var.az_b
-  map_public_ip_on_launch = true
-  tags = {
-    Name = "tf-wallarm-load-subnet-b"
-  }
-}
 
 resource "aws_internet_gateway" "my_vpc_igw" {
   vpc_id = "${aws_vpc.my_vpc.id}"
@@ -145,10 +136,6 @@ resource "aws_route_table_association" "my_vpc_a_public" {
   route_table_id = "${aws_route_table.my_vpc_public.id}"
 }
 
-resource "aws_route_table_association" "my_vpc_b_public" {
-  subnet_id      = "${aws_subnet.public_b.id}"
-  route_table_id = "${aws_route_table.my_vpc_public.id}"
-}
 
 #
 # Configure SG for wrk instances.
@@ -252,61 +239,101 @@ resource "aws_security_group" "wallarm_elb_sg" {
   }
 }
 
+# #
+# # Configure ELB instance for Backend instances.
+# #
+# resource "aws_elb" "backend_elb" {
+#   name = "tf-wallarm-load-backend"
+#   security_groups = [
+#     "${aws_security_group.backend_sg.id}"
+#   ]
+#   subnets = [
+#     "${aws_subnet.public_a.id}"
+#   ]
 #
-# Configure ELB instance for Backend instances.
+#   cross_zone_load_balancing = true
+#   health_check {
+#     healthy_threshold   = 2
+#     unhealthy_threshold = 2
+#     timeout             = 3
+#     interval            = 30
+#     target              = "HTTP:80/"
+#   }
+#   listener {
+#     lb_port           = 80
+#     lb_protocol       = "http"
+#     instance_port     = "80"
+#     instance_protocol = "http"
+#   }
+# }
+
+# #
+# # Configure ELB instance for WAF instances.
+# #
+# resource "aws_elb" "wallarm_elb" {
+#   name = "tf-wallarm-load-walarm"
+#   security_groups = [
+#     "${aws_security_group.wallarm_asg_sg.id}"
+#   ]
+#   subnets = [
+#     "${aws_subnet.public_a.id}"
+#   ]
 #
-resource "aws_elb" "backend_elb" {
-  name = "tf-wallarm-load-backend"
-  security_groups = [
-    "${aws_security_group.backend_sg.id}"
-  ]
+#   cross_zone_load_balancing = true
+#   health_check {
+#     healthy_threshold   = 2
+#     unhealthy_threshold = 2
+#     timeout             = 3
+#     interval            = 30
+#     target              = "HTTP:80/"
+#   }
+#   listener {
+#     lb_port           = 80
+#     lb_protocol       = "http"
+#     instance_port     = "80"
+#     instance_protocol = "http"
+#   }
+# }
+
+#
+# Configure NLB instance for WAF nodes.
+#
+resource "aws_lb" "wallarm_asg_nlb" {
+  name               = "tf-wallarm-load-asg-nlb"
+  internal           = false
+  load_balancer_type = "network"
   subnets = [
-    "${aws_subnet.public_a.id}",
-    "${aws_subnet.public_b.id}"
+    "${aws_subnet.public_a.id}"
   ]
 
-  cross_zone_load_balancing = true
-  health_check {
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    timeout             = 3
-    interval            = 30
-    target              = "HTTP:80/"
-  }
-  listener {
-    lb_port           = 80
-    lb_protocol       = "http"
-    instance_port     = "80"
-    instance_protocol = "http"
+  enable_deletion_protection = false
+}
+
+#
+# Configure HTTP and HTTPS target groups for the NLB load balancer.
+#
+resource "aws_lb_target_group" "wallarm_asg_target_http" {
+  name     = "tf-wallarm-load-asg-target-http"
+  port     = 80
+  protocol = "TCP"
+  vpc_id   = "${aws_vpc.my_vpc.id}"
+  stickiness {
+    enabled = false
+    type    = "lb_cookie"
   }
 }
 
 #
-# Configure ELB instance for WAF instances.
+# Configure HTTP and HTTPS listeners for the NLB load balancer.
 #
-resource "aws_elb" "wallarm_elb" {
-  name = "tf-wallarm-load-walarm"
-  security_groups = [
-    "${aws_security_group.wallarm_asg_sg.id}"
-  ]
-  subnets = [
-    "${aws_subnet.public_a.id}",
-    "${aws_subnet.public_b.id}"
-  ]
+resource "aws_lb_listener" "wallarm_asg_nlb_http" {
+  load_balancer_arn = "${aws_lb.wallarm_asg_nlb.arn}"
+  port              = "80"
+  protocol          = "TCP"
 
-  cross_zone_load_balancing = true
-  health_check {
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    timeout             = 3
-    interval            = 30
-    target              = "HTTP:80/"
-  }
-  listener {
-    lb_port           = 80
-    lb_protocol       = "http"
-    instance_port     = "80"
-    instance_protocol = "http"
+  default_action {
+    type             = "forward"
+    target_group_arn = "${aws_lb_target_group.wallarm_asg_target_http.arn}"
   }
 }
 
@@ -336,8 +363,7 @@ runcmd:
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
- - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
+ - 'echo "* soft nofile 1000000\n* hard nofile 1000000" >> /etc/security/limits.conf'
  - sysctl -p
  EOF
 }
@@ -348,9 +374,9 @@ runcmd:
 resource "aws_autoscaling_group" "wrk_asg" {
   name                 = "tf-wrk_asg-${aws_launch_configuration.wrk_launch_config.name}"
   launch_configuration = "${aws_launch_configuration.wrk_launch_config.name}"
-  min_size             = "2"
-  max_size             = "2"
-  vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
+  min_size             = "1"
+  max_size             = "1"
+  vpc_zone_identifier  = ["${aws_subnet.public_a.id}"]
 
   tag {
     key                 = "Name"
@@ -380,7 +406,7 @@ write_files:
    content: |
     user www-data;
     worker_processes auto;
-    worker_rlimit_nofile 100000;
+    worker_rlimit_nofile 320000;
     pid /run/nginx.pid;
     include /etc/nginx/modules-enabled/*.conf;
 
@@ -440,19 +466,23 @@ write_files:
       include /etc/nginx/sites-enabled/*;
     }
 runcmd:
+ - curl -sSL https://get.docker.com/ | sh
+ - docker pull awallarm/bknd
  - apt-get update -y && apt-get install nginx -y
- - systemctl start nginx
  - mkdir /etc/cloudwatch/
  - curl -O https://s3.${var.aws_region}.amazonaws.com/amazoncloudwatch-agent-${var.aws_region}/debian/amd64/latest/amazon-cloudwatch-agent.deb
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
- - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
+ - 'echo "* soft nofile 1000000\n* hard nofile 1000000" >> /etc/security/limits.conf'
  - sysctl -p
  - mv /etc/nginx/custom-nginx.conf /etc/nginx/nginx.conf
- - sed 's#404;#404;\n                keepalive_requests 100000;#g' /etc/nginx/sites-available/default
- - nginx -s reload
+ - sed -i '0,/404;/{s/404;/404;\n                keepalive_requests 100000;/}' /etc/nginx/sites-available/default
+ - sed -i 's#listen 80 default_server;#listen 80 default_server reuseport;#g' /etc/nginx/sites-enabled/default
+ - sed -i '26 a Restart=on-failure\nRestartSec=5s' /lib/systemd/system/nginx.service
+ - systemctl daemon-reload
+ - systemctl start nginx
+ - systemctl restart nginx
  EOF
 }
 
@@ -462,16 +492,25 @@ runcmd:
 resource "aws_autoscaling_group" "backend_asg" {
   name                 = "tf-backend_asg-${aws_launch_configuration.backend_launch_config.name}"
   launch_configuration = "${aws_launch_configuration.backend_launch_config.name}"
-  min_size             = "4"
-  max_size             = "4"
-  min_elb_capacity     = "4"
-  vpc_zone_identifier  = ["${aws_subnet.public_a.id}", "${aws_subnet.public_b.id}"]
-  load_balancers       = ["${aws_elb.backend_elb.id}"]
+  min_size             = "1"
+  max_size             = "1"
+  min_elb_capacity     = "1"
+  vpc_zone_identifier  = ["${aws_subnet.public_a.id}"]
+  # load_balancers       = ["${aws_elb.backend_elb.id}"]
 
   tag {
     key                 = "Name"
     value               = "tf-wallarm-load-backend"
     propagate_at_launch = true
+  }
+}
+
+data "aws_instances" "backend" {
+  depends_on = ["aws_autoscaling_group.backend_asg"]
+
+  filter {
+    name   = "tag:Name"
+    values = ["tf-wallarm-load-backend"]
   }
 }
 
@@ -497,7 +536,7 @@ write_files:
    content: |
     user www-data;
     worker_processes auto;
-    worker_rlimit_nofile 100000;
+    worker_rlimit_nofile 320000;
     pid /run/nginx.pid;
     include /etc/nginx/modules-enabled/*.conf;
 
@@ -584,9 +623,9 @@ write_files:
    permissions: '0644'
    content: |
      resolver 10.0.0.2 valid=30s;
-     resolver_timeout 15s;
+     resolver_timeout 20s;
      upstream backend {
-       server ${aws_elb.backend_elb.dns_name};
+       server ${element(data.aws_instances.backend.private_ips, 0)};
        keepalive 10000;
      }
      map $remote_addr $wallarm_mode_real {
@@ -594,11 +633,25 @@ write_files:
        include /etc/nginx/scanner-ips.conf;
      }
      server {
-       listen 80 default_server reuseport;
+       listen 80 default_server reuseport backlog=10000;
        server_name _;
        wallarm_acl default;
        wallarm_mode $wallarm_mode_real;
-       # wallarm_instance 1;
+
+       # wallarm_parse_response off;
+       # wallarm_parser_disable base64;
+       # wallarm_parser_diIftopsable xml;
+       # wallarm_parser_disable cookie;
+       # wallarm_parser_disable zlib;
+       # wallarm_parser_disable htmljs;
+       # wallarm_parser_disable json;
+       # wallarm_parser_disable multipart;
+       # wallarm_parser_disable percent;
+       # wallarm_parser_disable urlenc;
+       # wallarm_parse_html_response off;
+       # wallarm_process_time_limit 1;
+       # wallarm_process_time_limit_block off;
+
        location /healthcheck {
          return 200;
        }
@@ -629,12 +682,13 @@ runcmd:
  - dpkg -i -E ./amazon-cloudwatch-agent.deb
  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s
  - 'echo "net.ipv4.ip_local_port_range=10024 60999" >> /etc/sysctl.conf'
- - 'echo "* soft nofile 1040000\n* hard nofile 1040000" >> /etc/security/limits.conf'
- - 'echo "* soft nproc 1040000\n* hard nproc 1040000" >> /etc/security/limits.conf'
+ - 'echo "net.core.somaxconn=10000" >> /etc/sysctl.conf'
+ - 'echo "* soft nofile 1000000\n* hard nofile 1000000" >> /etc/security/limits.conf'
  - sysctl -p
  - sed -i '26 a Restart=on-failure\nRestartSec=5s' /lib/systemd/system/nginx.service
  - systemctl daemon-reload
- - service nginx start
+ - systemctl start nginx
+ - systemctl restart nginx
  EOF
 }
 
@@ -646,11 +700,13 @@ resource "aws_autoscaling_group" "wallarm_waf_asg" {
 
   name                 = "tf-wallarm-load-waf-asg-${aws_launch_configuration.wallarm_launch_config.name}"
   launch_configuration = "${aws_launch_configuration.wallarm_launch_config.name}"
-  min_size             = "8"
-  max_size             = "8"
-  min_elb_capacity     = "8"
+  min_size             = "1"
+  max_size             = "1"
+  min_elb_capacity     = "1"
   vpc_zone_identifier  = ["${aws_subnet.public_a.id}"]
-  load_balancers       = ["${aws_elb.wallarm_elb.id}"]
+  target_group_arns    = ["${aws_lb_target_group.wallarm_asg_target_http.arn}"]
+  # For ELB when it is not throttled
+  # load_balancers       = ["${aws_elb.wallarm_elb.id}"]
 
   tag {
     key                 = "Name"
